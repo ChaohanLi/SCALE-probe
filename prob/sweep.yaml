@@ -1,0 +1,44 @@
+program: probe.py
+project: scale-probe
+method: grid
+metric:
+  goal: maximize
+  name: cv_test/macro_f1
+
+parameters:
+  dataset_id:
+    values:
+      - 80w_GSE196830_atac
+      - 120w_GSE196830_atac
+
+# Fixed args passed to every run.
+command:
+  - /lichaohan/miniconda3/envs/scvi/bin/python
+  - -u
+  - ${program}
+  - --wandb_project
+  - scale-probe
+  - --max_epochs
+  - "500"
+  - --batch_size_train
+  - "512"
+  - --n_top_peaks
+  - "-1"
+  - --min_cells_per_peak
+  - "3"
+  - --n_latent
+  - "20"
+  - --lr
+  - "1e-3"
+  - --beta
+  - "1.0"
+  - --warmup_epochs
+  - "20"
+  - --no-init_gmm
+  - --early_stopping
+  - --n_jobs
+  - "16"
+  - --grad_clip
+  - "1.0"
+  - --save_embeddings
+  - ${args}
