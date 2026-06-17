@@ -228,7 +228,7 @@ def parquet_to_split_adatas(
             sub = sp.csr_matrix(vals[mask])   # uint8 CSR
             bc_list.extend(bcs[mask].tolist())
             d_list.append(sub.data.copy())
-            i_list.append(sub.indices.astype(np.int64))
+            i_list.append(sub.indices.copy())               # int32 OK, col idx max=228k
             iptr_parts.append(sub.indptr[1:].astype(np.int64) + nnz_ref[0])
             nnz_ref[0] += sub.nnz
             del sub
@@ -249,9 +249,12 @@ def parquet_to_split_adatas(
         print(f"  Building {tag} CSR ...", flush=True)
         data_u8  = np.concatenate(d_parts);  d_parts.clear()
         data_f32 = data_u8.astype(np.float32); del data_u8
-        indices  = np.concatenate(i_parts).astype(np.int64);   i_parts.clear()
+        indices_i32 = np.concatenate(i_parts); i_parts.clear()  # int32, col idx < 228k
+        indices  = indices_i32.astype(np.int64); del indices_i32  # int64 for csr_array
         indptr   = np.concatenate(iptr_parts).astype(np.int64)
-        mat = sp.csr_matrix((data_f32, indices, indptr), shape=(n_rows, n_cols))
+        # csr_array (scipy 1.14+) preserves int64 indices/indptr;
+        # csr_matrix silently downcasts to int32, breaking NNZ > 2^31.
+        mat = sp.csr_array((data_f32, indices, indptr), shape=(n_rows, n_cols))
         print(f"    {tag}: {mat.shape}, nnz={mat.nnz:,}", flush=True)
         return mat
 
@@ -924,28 +927,36 @@ def main():
     # Skip if the combined dense footprint exceeds _DENSIFY_LIMIT_GB to avoid OOM.
     _DENSIFY_LIMIT_GB = 200
     import scipy.sparse as sp
+    import resource
     _n_train, _n_feat = adata_train.shape
     _n_val            = adata_val.shape[0]
     _dense_gb = (_n_train + _n_val) * _n_feat * 4 / 1e9
+    _rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+    print(f"  RSS before densify check: {_rss_gb:.1f} GB  "
+          f"(dense footprint would be ~{_dense_gb:.0f} GB)", flush=True)
     if sp.issparse(adata_train.X) and _dense_gb <= _DENSIFY_LIMIT_GB:
-        print(f"Pre-densifying train X (sparse → dense float32, "
+        print(f"Pre-densifying train+val X (sparse → dense float32, "
               f"~{_dense_gb:.0f} GB total)...", flush=True)
         adata_train.X = adata_train.X.toarray()
         adata_val.X   = adata_val.X.toarray()
-    elif sp.issparse(adata_train.X):
+        _rss_gb2 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+        print(f"  RSS after densify: {_rss_gb2:.1f} GB", flush=True)
+    else:
         print(f"Skipping pre-densify: dense footprint ~{_dense_gb:.0f} GB "
-              f"> {_DENSIFY_LIMIT_GB} GB limit; keeping sparse "
-              f"(num_workers will parallelise toarray()).", flush=True)
+              f"> {_DENSIFY_LIMIT_GB} GB limit; keeping sparse.", flush=True)
 
+    # num_workers=0: single-process DataLoader avoids fork() copying the large
+    # sparse matrix into each worker's address space (silent OOM on 80w/120w).
+    _use_workers = 0
     train_ds = SingleCellDataset(adata_train)
     val_ds   = SingleCellDataset(adata_val)
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size_train, shuffle=True,
-        num_workers=8, pin_memory=True, drop_last=False,
+        num_workers=_use_workers, pin_memory=True, drop_last=False,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size_train, shuffle=False,
-        num_workers=8, pin_memory=True, drop_last=False,
+        num_workers=_use_workers, pin_memory=True, drop_last=False,
     )
 
     # ── Build SCALE model ─────────────────────────────────────────────

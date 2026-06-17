@@ -24,7 +24,8 @@ from sklearn.preprocessing import maxabs_scale, MaxAbsScaler
 
 from glob import glob
 
-np.warnings.filterwarnings('ignore')
+import warnings
+warnings.filterwarnings('ignore')
 DATA_PATH = os.path.expanduser("~")+'/.scale/'
 CHUNK_SIZE = 20000
 
@@ -210,7 +211,11 @@ class SingleCellDataset(Dataset):
         return self.adata.X.shape[0]
     
     def __getitem__(self, idx):
-        x = self.adata.X[idx].toarray().squeeze()
+        xi = self.adata.X[[idx]]  # list-index works for both csr_matrix and csr_array
+        if hasattr(xi, 'toarray'):
+            x = xi.toarray().squeeze()
+        else:
+            x = np.asarray(xi, dtype=np.float32).ravel()
         domain_id = self.adata.obs['batch'].cat.codes[idx]
 #         return x, domain_id, idx
         return x
